@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Решатель задач по информатике</title>
+<style>
+:root{--bg:#f2f4f7;--grid:rgba(23,32,43,.06);--ink:#17202b;--mute:#5d6b7c;--line:#cfd7e1;--card:#fff;--acc:#1f5fd6;--accink:#fff}
+@media (prefers-color-scheme:dark){:root{--bg:#10151c;--grid:rgba(255,255,255,.05);--ink:#e6ebf2;--mute:#93a1b3;--line:#2a3441;--card:#18202a;--acc:#6aa2ff;--accink:#0b1220}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);background-size:24px 24px;color:var(--ink);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:760px;margin:0 auto;padding:28px 16px 64px}
+h1{font-size:1.6rem;margin:0 0 4px}
+.sub{color:var(--mute);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px}
+.drop{display:block;position:relative;border:2px dashed var(--line);border-radius:10px;padding:26px 16px;text-align:center;cursor:pointer;color:var(--mute)}
+.drop:hover,.drop:focus-within{border-color:var(--acc);color:var(--ink)}
+.drop input{position:absolute;inset:0;opacity:0;cursor:pointer}
+textarea{width:100%;min-height:160px;margin-top:12px;resize:vertical;font:inherit;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)}
+.row{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-top:12px}
+button{font:inherit;font-weight:600;padding:10px 20px;border:0;border-radius:8px;background:var(--acc);color:var(--accink);cursor:pointer}
+button:disabled{opacity:.5;cursor:wait}
+button:focus-visible,textarea:focus-visible,.drop:focus-within{outline:3px solid var(--acc);outline-offset:2px}
+#status{color:var(--mute);font-size:.9rem}
+#out div{white-space:pre-wrap;word-break:break-word;margin:0 0 10px}
+pre{background:#0f1720;color:#e6ebf2;padding:12px;border-radius:8px;overflow-x:auto;margin:0 0 10px}
+.warn{color:var(--mute);font-size:.85rem;margin:0}
+</style>
+</head>
+<body>
+<main>
+  <h1>Решатель задач по информатике</h1>
+  <p class="sub">Сфотографируй условие, проверь распознанный текст и получи решение.</p>
+
+  <section class="card">
+    <label class="drop">Сфотографировать или выбрать картинку
+      <input type="file" id="photo" accept="image/*">
+    </label>
+    <textarea id="task" placeholder="Текст задачи появится здесь. Его можно исправить или ввести вручную."></textarea>
+    <div class="row">
+      <label><input type="radio" name="mode" value="learn" checked> Объяснить по шагам</label>
+      <label><input type="radio" name="mode" value="answer"> Только ответ</label>
+    </div>
+    <div class="row">
+      <button id="solve">Решить</button>
+      <span id="status" role="status"></span>
+    </div>
+  </section>
+
+  <section class="card" id="result" hidden>
+    <div id="out"></div>
+    <p class="warn">Модель может ошибаться. Запусти код и сверь ответ с условием.</p>
+  </section>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>
+// Адрес твоего Cloudflare Worker (см. шаг 3 в инструкции)
+const WORKER_URL = "https://ВАШ-ВОРКЕР.ВАШ-АККАУНТ.workers.dev";
+const $ = id => document.getElementById(id);
+
+$("photo").addEventListener("change", async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  $("status").textContent = "Распознаю текст…";
+  try {
+    const { data } = await Tesseract.recognize(file, "rus+eng", {
+      logger: m => {
+        if (m.status === "recognizing text")
+          $("status").textContent = "Распознаю… " + Math.round(m.progress * 100) + "%";
+      }
+    });
+    const old = $("task").value.trim();
+    $("task").value = (old ? old + "\n\n" : "") + data.text.trim();
+    $("status").textContent = "Готово. Проверь текст и поправь ошибки.";
+  } catch {
+    $("status").textContent = "Не удалось распознать. Введи текст вручную.";
+  }
+  e.target.value = "";
+});
+
+$("solve").addEventListener("click", async () => {
+  const task = $("task").value.trim();
+  if (!task) { $("status").textContent = "Сначала добавь текст задачи."; return; }
+  const btn = $("solve");
+  btn.disabled = true;
+  $("status").textContent = "Решаю…";
+  try {
+    const r = await fetch(WORKER_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task, mode: document.querySelector("input[name=mode]:checked").value })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.status);
+    render(d.text);
+    $("status").textContent = "";
+  } catch (err) {
+    $("status").textContent = "Ошибка: " + err.message;
+  }
+  btn.disabled = false;
+});
+
+// Текст — как текст, блоки ``` — как код (без innerHTML, чтобы не было XSS)
+function render(text) {
+  const out = $("out");
+  out.replaceChildren();
+  text.split("```").forEach((part, i) => {
+    const el = document.createElement(i % 2 ? "pre" : "div");
+    el.textContent = i % 2 ? part.replace(/^\w*\n/, "").trim() : part.trim();
+    if (el.textContent) out.appendChild(el);
+  });
+  $("result").hidden = false;
+}
+</script>
+</body>
+</html>
